@@ -1,15 +1,22 @@
 const https = require('https');
-const MODEL_OPUS    = 'claude-opus-4-7';
-const MODEL_SONNET  = 'claude-sonnet-4-6';
-
+ 
+// ─────────────────────────────────────────────────────────────────────
+// SMART CLIMB — Netlify Function (proxy Anthropic API)
+// Upgrade modèles : Sonnet 4 (deprecated) → Opus 4.7 / Sonnet 4.6
+// ─────────────────────────────────────────────────────────────────────
+ 
+const MODEL_OPUS    = 'claude-opus-4-7';     // Vision 3.75MP, raisonnement haut niveau
+const MODEL_SONNET  = 'claude-sonnet-4-6';   // Daily driver, coaching vidéo
+ 
+// Sélection automatique du modèle en fonction du mode
 function pickModel(mode) {
   switch (mode) {
-    case 'route_reading':
-    case 'block_generation':    // ← prêt pour la prochaine feature
-      return MODEL_OPUS;
-    case 'coaching':
+    case 'route_reading':       // Détection de prises sur photo de mur
+    case 'block_generation':    // (futur) Génération de blocs multi-couleurs
+      return MODEL_OPUS;        // Vision haute résolution + raisonnement spatial critique
+    case 'coaching':            // Analyse de mouvement vidéo (6+ frames)
     default:
-      return MODEL_SONNET;
+      return MODEL_SONNET;      // Bon équilibre coût/qualité pour traiter plus de frames
   }
 }
  
@@ -64,13 +71,6 @@ FORMATS APPRECIES:
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return {
-// AVANT
-model: payload.model || 'claude-sonnet-4-20250514'
-
-// APRÈS
-const selectedModel = payload.model || pickModel(mode);
-// ...
-model: selectedModel
       statusCode: 200,
       headers: {
         'Access-Control-Allow-Origin': '*',
@@ -80,9 +80,6 @@ model: selectedModel
       body: '',
     };
   }
-'X-Smart-Climb-Model': selectedModel
-max_tokens: payload.max_tokens || (mode === 'route_reading' ? 4500 : 2500)
-
  
   // ── DELETE: Suppression d'une analyse dans Supabase ───────────────────
   if (event.httpMethod === 'DELETE') {
@@ -176,9 +173,12 @@ POUR LE PLAN D ENTRAINEMENT:
 REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
     }
  
+    // Sélection du modèle : explicite via payload.model, sinon auto par mode
+    const selectedModel = payload.model || pickModel(mode);
+ 
     const anthropicBody = {
-      model: payload.model || 'claude-sonnet-4-20250514',
-      max_tokens: payload.max_tokens || 2500,
+      model: selectedModel,
+      max_tokens: payload.max_tokens || (mode === 'route_reading' ? 3500 : 2500),
       system: systemPrompt,
       messages: payload.messages,
     };
@@ -211,6 +211,7 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
+        'X-Smart-Climb-Model': selectedModel,  // Pour debug côté client si besoin
       },
       body: result,
     };
@@ -221,4 +222,3 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
     };
   }
 };
- 
