@@ -1,4 +1,17 @@
 const https = require('https');
+const MODEL_OPUS    = 'claude-opus-4-7';
+const MODEL_SONNET  = 'claude-sonnet-4-6';
+
+function pickModel(mode) {
+  switch (mode) {
+    case 'route_reading':
+    case 'block_generation':    // ← prêt pour la prochaine feature
+      return MODEL_OPUS;
+    case 'coaching':
+    default:
+      return MODEL_SONNET;
+  }
+}
  
 const PRO_REFERENCES = `
 REFERENCES BIOMECANIQUES — ELITE MONDIALE
@@ -51,6 +64,13 @@ FORMATS APPRECIES:
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return {
+// AVANT
+model: payload.model || 'claude-sonnet-4-20250514'
+
+// APRÈS
+const selectedModel = payload.model || pickModel(mode);
+// ...
+model: selectedModel
       statusCode: 200,
       headers: {
         'Access-Control-Allow-Origin': '*',
@@ -60,6 +80,9 @@ exports.handler = async (event) => {
       body: '',
     };
   }
+'X-Smart-Climb-Model': selectedModel
+max_tokens: payload.max_tokens || (mode === 'route_reading' ? 4500 : 2500)
+
  
   // ── DELETE: Suppression d'une analyse dans Supabase ───────────────────
   if (event.httpMethod === 'DELETE') {
