@@ -2,21 +2,28 @@ const https = require('https');
  
 // ─────────────────────────────────────────────────────────────────────
 // SMART CLIMB — Netlify Function (proxy Anthropic API)
-// Upgrade modèles : Sonnet 4 (deprecated) → Opus 4.7 / Sonnet 4.6
+// Fix: ignore deprecated models sent by client, use Opus 4.7 / Sonnet 4.6
 // ─────────────────────────────────────────────────────────────────────
  
-const MODEL_OPUS    = 'claude-opus-4-7';     // Vision 3.75MP, raisonnement haut niveau
-const MODEL_SONNET  = 'claude-sonnet-4-6';   // Daily driver, coaching vidéo
+const MODEL_OPUS   = 'claude-opus-4-7';
+const MODEL_SONNET = 'claude-sonnet-4-6';
  
-// Sélection automatique du modèle en fonction du mode
+// Modèles deprecated que le client pourrait encore envoyer
+const DEPRECATED_MODELS = [
+  'claude-sonnet-4-20250514',
+  'claude-3-5-sonnet-20241022',
+  'claude-3-sonnet-20240229',
+  'claude-3-opus-20240229',
+];
+ 
 function pickModel(mode) {
   switch (mode) {
-    case 'route_reading':       // Détection de prises sur photo de mur
-    case 'block_generation':    // (futur) Génération de blocs multi-couleurs
-      return MODEL_OPUS;        // Vision haute résolution + raisonnement spatial critique
-    case 'coaching':            // Analyse de mouvement vidéo (6+ frames)
+    case 'route_reading':
+    case 'block_generation':
+      return MODEL_OPUS;
+    case 'coaching':
     default:
-      return MODEL_SONNET;      // Bon équilibre coût/qualité pour traiter plus de frames
+      return MODEL_SONNET;
   }
 }
  
@@ -173,8 +180,11 @@ POUR LE PLAN D ENTRAINEMENT:
 REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
     }
  
-    // Sélection du modèle : explicite via payload.model, sinon auto par mode
-    const selectedModel = payload.model || pickModel(mode);
+    // ── CHOIX DU MODELE ────────────────────────────────────────────────
+    // Si le client envoie un modèle deprecated, on l'ignore et on utilise pickModel()
+    const clientModel = payload.model;
+    const isDeprecated = !clientModel || DEPRECATED_MODELS.includes(clientModel);
+    const selectedModel = isDeprecated ? pickModel(mode) : clientModel;
  
     const anthropicBody = {
       model: selectedModel,
@@ -211,7 +221,7 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        'X-Smart-Climb-Model': selectedModel,  // Pour debug côté client si besoin
+        'X-Smart-Climb-Model': selectedModel,
       },
       body: result,
     };
