@@ -1,27 +1,12 @@
 const https = require('https');
 
 // ─────────────────────────────────────────────────────────────────────
-// SMART CLIMB — Netlify Function (proxy Anthropic API)
-// Fix: ignore deprecated models sent by client, use Opus 4.7 / Sonnet 4.6
+// SMART CLIMB — Netlify Function (Gemini API proxy)
+// Migrated from Anthropic Claude to Google Gemini 2.5 Flash
+// Responses are translated back to Claude format for frontend compat
 // ─────────────────────────────────────────────────────────────────────
 
-// Use Sonnet for everything — faster (15-25s vs 40-60s), cheaper, and
-// quality is more than sufficient for climbing video analysis.
-// Opus is overkill for this use case and causes timeouts on Netlify (26s limit).
-const MODEL_SONNET = 'claude-sonnet-4-6-20250514';
-
-// Modèles deprecated que le client pourrait encore envoyer
-const DEPRECATED_MODELS = [
-  'claude-sonnet-4-20250514',
-  'claude-3-5-sonnet-20241022',
-  'claude-3-sonnet-20240229',
-  'claude-3-opus-20240229',
-];
-
-function pickModel(mode) {
-  // Sonnet for all modes — fast enough for 30s target, great vision quality
-  return MODEL_SONNET;
-}
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 const PRO_REFERENCES = `
 REFERENCES BIOMECANIQUES — ELITE MONDIALE
@@ -71,6 +56,57 @@ FORMATS APPRECIES:
 - "Jeu des couleurs": une seule couleur de prises
 `;
 
+// ── Convert Claude message format → Gemini format ───────────────────
+function claudeToGemini(messages) {
+  return messages.map(msg => {
+    const role = msg.role === 'assistant' ? 'model' : 'user';
+    const parts = [];
+
+    if (typeof msg.content === 'string') {
+      parts.push({ text: msg.content });
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'text') {
+          parts.push({ text: block.text });
+        } else if (block.type === 'image' && block.source) {
+          parts.push({
+            inlineData: {
+              mimeType: block.source.media_type || 'image/jpeg',
+              data: block.source.data,
+            },
+          });
+        }
+      }
+    }
+
+    return { role, parts };
+  });
+}
+
+// ── Convert Gemini response → Claude response format ────────────────
+function geminiToClaude(geminiResponse) {
+  const candidate = geminiResponse.candidates && geminiResponse.candidates[0];
+  if (!candidate || !candidate.content || !candidate.content.parts) {
+    return {
+      content: [{ type: 'text', text: '{"error":"No response from Gemini"}' }],
+      model: GEMINI_MODEL,
+      role: 'assistant',
+    };
+  }
+
+  const content = candidate.content.parts.map(part => ({
+    type: 'text',
+    text: part.text || '',
+  }));
+
+  return {
+    content,
+    model: GEMINI_MODEL,
+    role: 'assistant',
+    stop_reason: 'end_turn',
+  };
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return {
@@ -84,7 +120,7 @@ exports.handler = async (event) => {
     };
   }
 
-  // ── DELETE: Suppression d'une analyse dans Supabase ───────────────────
+  // ── DELETE: Suppression d'une analyse dans Supabase ───────────────
   if (event.httpMethod === 'DELETE') {
     try {
       const { analysisId, profileId } = JSON.parse(event.body || '{}');
@@ -112,9 +148,13 @@ exports.handler = async (event) => {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: { message: 'ANTHROPIC_API_KEY non configuree' } }) };
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ error: { message: 'GEMINI_API_KEY non configuree sur Netlify' } }),
+    };
   }
 
   try {
@@ -182,30 +222,31 @@ REGLES DE REDACTION IMPORTANTES:
 REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
     }
 
-    // ── CHOIX DU MODELE ────────────────────────────────────────────────
-    // Si le client envoie un modèle deprecated, on l'ignore et on utilise pickModel()
-    const clientModel = payload.model;
-    const isDeprecated = !clientModel || DEPRECATED_MODELS.includes(clientModel);
-    const selectedModel = isDeprecated ? pickModel(mode) : clientModel;
+    // ── Convert messages from Claude format to Gemini format ──────────
+    const geminiContents = claudeToGemini(payload.messages);
 
-    const anthropicBody = {
-      model: selectedModel,
-      max_tokens: payload.max_tokens || (mode === 'route_reading' ? 3500 : 2500),
-      system: systemPrompt,
-      messages: payload.messages,
+    // ── Build Gemini API request ─────────────────────────────────────
+    const geminiBody = {
+      contents: geminiContents,
+      systemInstruction: {
+        parts: [{ text: systemPrompt }],
+      },
+      generationConfig: {
+        maxOutputTokens: payload.max_tokens || 4000,
+        temperature: 0.4,
+      },
     };
 
-    const bodyStr = JSON.stringify(anthropicBody);
+    const bodyStr = JSON.stringify(geminiBody);
+    const geminiUrl = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
     const result = await new Promise((resolve, reject) => {
       const req = https.request({
-        hostname: 'api.anthropic.com',
-        path: '/v1/messages',
+        hostname: 'generativelanguage.googleapis.com',
+        path: geminiUrl,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
           'Content-Length': Buffer.byteLength(bodyStr),
         },
       }, (res) => {
@@ -218,58 +259,50 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
       req.end();
     });
 
-    // ── Validate response is JSON before forwarding ──────────────────
+    // ── Handle errors ────────────────────────────────────────────────
     if (result.statusCode !== 200) {
-      // Try to parse error from Anthropic
-      let errMsg = 'Erreur API Anthropic (HTTP ' + result.statusCode + ')';
+      let errMsg = 'Erreur API Gemini (HTTP ' + result.statusCode + ')';
       try {
         const parsed = JSON.parse(result.body);
         if (parsed.error && parsed.error.message) errMsg = parsed.error.message;
-        if (parsed.error && parsed.error.type === 'rate_limit_error') errMsg = 'exceeded_limit';
+        if (parsed.error && parsed.error.status === 'RESOURCE_EXHAUSTED') errMsg = 'exceeded_limit';
       } catch (_) {
-        // Response was HTML or not JSON — this was the original bug
-        errMsg = 'Erreur serveur (réponse non-JSON). Vérifiez votre clé API et le modèle utilisé.';
+        errMsg = 'Erreur serveur (réponse non-JSON). Vérifiez votre clé API Gemini.';
       }
       return {
-        statusCode: result.statusCode,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
+        statusCode: result.statusCode >= 400 ? result.statusCode : 502,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
         body: JSON.stringify({ error: { message: errMsg, type: 'api_error' } }),
       };
     }
 
-    // Sanity check: make sure response is valid JSON
+    // ── Parse Gemini response and convert to Claude format ───────────
+    let geminiData;
     try {
-      JSON.parse(result.body);
+      geminiData = JSON.parse(result.body);
     } catch (_) {
       return {
         statusCode: 502,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
         body: JSON.stringify({ error: { message: 'Réponse API invalide (non-JSON)', type: 'parse_error' } }),
       };
     }
+
+    const claudeResponse = geminiToClaude(geminiData);
 
     return {
       statusCode: 200,
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        'X-Smart-Climb-Model': selectedModel,
+        'X-Smart-Climb-Model': GEMINI_MODEL,
       },
-      body: result.body,
+      body: JSON.stringify(claudeResponse),
     };
   } catch (e) {
     return {
       statusCode: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
       body: JSON.stringify({ error: { message: e.message } }),
     };
   }
