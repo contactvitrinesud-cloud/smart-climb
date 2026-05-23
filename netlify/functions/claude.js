@@ -5,8 +5,10 @@ const https = require('https');
 // Fix: ignore deprecated models sent by client, use Opus 4.7 / Sonnet 4.6
 // ─────────────────────────────────────────────────────────────────────
 
-const MODEL_OPUS   = 'claude-opus-4-7';
-const MODEL_SONNET = 'claude-sonnet-4-6';
+// Use Sonnet for everything — faster (15-25s vs 40-60s), cheaper, and
+// quality is more than sufficient for climbing video analysis.
+// Opus is overkill for this use case and causes timeouts on Netlify (26s limit).
+const MODEL_SONNET = 'claude-sonnet-4-6-20250514';
 
 // Modèles deprecated que le client pourrait encore envoyer
 const DEPRECATED_MODELS = [
@@ -17,14 +19,8 @@ const DEPRECATED_MODELS = [
 ];
 
 function pickModel(mode) {
-  switch (mode) {
-    case 'route_reading':
-    case 'block_generation':
-      return MODEL_OPUS;
-    case 'coaching':
-    default:
-      return MODEL_SONNET;
-  }
+  // Sonnet for all modes — fast enough for 30s target, great vision quality
+  return MODEL_SONNET;
 }
 
 const PRO_REFERENCES = `
@@ -215,12 +211,48 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
       }, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
-        res.on('end', () => resolve(data));
+        res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));
       });
       req.on('error', reject);
       req.write(bodyStr);
       req.end();
     });
+
+    // ── Validate response is JSON before forwarding ──────────────────
+    if (result.statusCode !== 200) {
+      // Try to parse error from Anthropic
+      let errMsg = 'Erreur API Anthropic (HTTP ' + result.statusCode + ')';
+      try {
+        const parsed = JSON.parse(result.body);
+        if (parsed.error && parsed.error.message) errMsg = parsed.error.message;
+        if (parsed.error && parsed.error.type === 'rate_limit_error') errMsg = 'exceeded_limit';
+      } catch (_) {
+        // Response was HTML or not JSON — this was the original bug
+        errMsg = 'Erreur serveur (réponse non-JSON). Vérifiez votre clé API et le modèle utilisé.';
+      }
+      return {
+        statusCode: result.statusCode,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+        body: JSON.stringify({ error: { message: errMsg, type: 'api_error' } }),
+      };
+    }
+
+    // Sanity check: make sure response is valid JSON
+    try {
+      JSON.parse(result.body);
+    } catch (_) {
+      return {
+        statusCode: 502,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+        body: JSON.stringify({ error: { message: 'Réponse API invalide (non-JSON)', type: 'parse_error' } }),
+      };
+    }
 
     return {
       statusCode: 200,
@@ -229,11 +261,15 @@ REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
         'Access-Control-Allow-Origin': '*',
         'X-Smart-Climb-Model': selectedModel,
       },
-      body: result,
+      body: result.body,
     };
   } catch (e) {
     return {
       statusCode: 500,
+      headers: {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
       body: JSON.stringify({ error: { message: e.message } }),
     };
   }
