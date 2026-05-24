@@ -1,309 +1,177 @@
-const https = require('https');
+// ═══════════════════════════════════════════════════════════════════
+// SMART CLIMB — Module d'analyse VIDÉO via Gemini Files API
+// Upload la vidéo entière → Gemini la regarde → analyse biomécanique réelle
+// ═══════════════════════════════════════════════════════════════════
+(function () {
+  // ⚠️ Clé API Gemini — DOIT être restreinte par domaine dans Google Cloud Console
+  var GEMINI_KEY = window.SMARTCLIMB_GEMINI_KEY || "";
+  var GEMINI_MODEL = "gemini-2.0-flash";
+  var GEMINI_BASE = "https://generativelanguage.googleapis.com";
 
-// ─────────────────────────────────────────────────────────────────────
-// SMART CLIMB — Netlify Function (Gemini API proxy)
-// Migrated from Anthropic Claude to Google Gemini 2.5 Flash
-// Responses are translated back to Claude format for frontend compat
-// ─────────────────────────────────────────────────────────────────────
-
-const GEMINI_MODEL = 'gemini-2.5-flash';
-
-const PRO_REFERENCES = `
-REFERENCES BIOMECANIQUES — ELITE MONDIALE
-
-=== ADAM ONDRA (9C) ===
-- Centre de gravite max 15cm du mur en devers
-- Pieds: placement precis, jambe tendue (drop knee)
-- Bras: opposition tendu/flechi, jamais 2 bras flechis simultanement
-- Regard: anticipe 2-3 mouvements d avance
-
-=== TOMOA NARASAKI (4x champion monde bloc) ===
-- Explosivite: lancer de hanche initie par les jambes
-- Coordination: pied -> hanche -> epaule -> main en 0.3-0.4s
-
-=== JANJA GARNBRET (6x championne monde) ===
-- Fluidite: aucune pause statique > 0.5s en bloque
-- Pieds: toujours actifs, repositionnement micro
-
-=== STANDARDS PAR NIVEAU ===
-6A-6C: Pieds actifs, centre de gravite proche du mur
-7A-7C: Drop knee, dynamisme controle, lecture 5+ mouvements
-8A+: Economie totale, explosivite ciblee, repos en position
-
-=== SCORES TYPIQUES PAR NIVEAU (sur 100, base sur references pros) ===
-Debutant (4C-5C): score moyen 40-55
-Intermediaire (6A-6C): score moyen 55-70
-Avance (7A-7C): score moyen 70-82
-Expert (8A+): score moyen 82-95
-Elite (9A+): score moyen 90-100 (Ondra/Garnbret/Narasaki = reference 95-100)
-`;
-
-const TRAINING_PHILOSOPHY = `
-PHILOSOPHIE D ENTRAINEMENT — PRATICABLE ET LUDIQUE
-
-Chaque exercice doit etre:
-1. Faisable en salle de bloc classique sans materiel special
-2. Avec objectif clair et mesurable
-3. Progressif sur 4 semaines
-4. Garder le plaisir (jeux, defis, circuits)
-5. Cibler UN seul defaut a la fois
-
-FORMATS APPRECIES:
-- "Les muets": grimper sans bruit avec les pieds
-- "Le ralenti": grimper 3x plus lentement
-- "Le 4x4": 4 blocs sans pause repete 4 fois
-- "Le blocage": tenir chaque position 3s
-- "Jeu des couleurs": une seule couleur de prises
-`;
-
-// ── Convert Claude message format → Gemini format ───────────────────
-function claudeToGemini(messages) {
-  return messages.map(msg => {
-    const role = msg.role === 'assistant' ? 'model' : 'user';
-    const parts = [];
-
-    if (typeof msg.content === 'string') {
-      parts.push({ text: msg.content });
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block.type === 'text') {
-          parts.push({ text: block.text });
-        } else if (block.type === 'image' && block.source) {
-          parts.push({
-            inlineData: {
-              mimeType: block.source.media_type || 'image/jpeg',
-              data: block.source.data,
-            },
-          });
-        }
-      }
-    }
-
-    return { role, parts };
-  });
-}
-
-// ── Convert Gemini response → Claude response format ────────────────
-function geminiToClaude(geminiResponse) {
-  const candidate = geminiResponse.candidates && geminiResponse.candidates[0];
-  if (!candidate || !candidate.content || !candidate.content.parts) {
-    return {
-      content: [{ type: 'text', text: '{"error":"No response from Gemini"}' }],
-      model: GEMINI_MODEL,
-      role: 'assistant',
-    };
+  // ── Construit le prompt d'analyse (références pros + structure JSON) ──
+  function buildPrompt(profile, historyStr) {
+    var p = profile || {};
+    return (
+      "Tu es un coach d'escalade de haut niveau, expert en biomécanique, pédagogue et bienveillant.\n\n" +
+      "Tu reçois une VIDÉO d'une tentative de bloc. Tu peux voir le mouvement réel : vitesse, fluidité, timing, transferts de poids, placements de pieds. Analyse ce que tu OBSERVES réellement dans la vidéo, jamais d'invention.\n\n" +
+      "=== RÉFÉRENCES ELITE MONDIALE ===\n" +
+      "Adam Ondra (9c): centre de gravité proche du mur en devers, jambe tendue (drop knee), jamais 2 bras fléchis simultanément, anticipe 2-3 mouvements.\n" +
+      "Tomoa Narasaki (4x champion bloc): explosivité initiée par les jambes, coordination pied→hanche→épaule→main en 0.3-0.4s.\n" +
+      "Janja Garnbret (6x championne): fluidité, aucune pause statique >0.5s, pieds toujours actifs.\n\n" +
+      "=== SCORES PAR NIVEAU (sur 100) ===\n" +
+      "Débutant 4C-5C: 40-55 | Intermédiaire 6A-6C: 55-70 | Avancé 7A-7C: 70-82 | Expert 8A+: 82-95 | Elite 9A+: 90-100.\n" +
+      "Un grimpeur de niveau " + (p.level || "?") + " ne peut PAS dépasser le score typique de son niveau sauf technique exceptionnelle visible.\n\n" +
+      "=== PROFIL DU GRIMPEUR ===\n" +
+      "Niveau: " + (p.level || "?") + " | Style: " + (p.style || "?") + " | " + (p.height || "?") + "cm / " + (p.weight || "?") + "kg | Force doigts: " + (p.fingerStrength || "?") + "kg | Pmax: " + (p.pmax || "?") + " W/kg.\n" +
+      (historyStr ? "Sessions précédentes: " + historyStr + "\n" : "Première session.\n") +
+      "\n=== EXERCICES LUDIQUES POSSIBLES ===\n" +
+      "« Les muets » (grimper sans bruit), « Le ralenti » (3x plus lent), « Le 4x4 », « Le blocage » (tenir 3s), « Jeu des couleurs ».\n\n" +
+      "=== RÈGLES DE RÉDACTION ===\n" +
+      "- Décris la session globalement, JAMAIS de référence à des numéros d'images ou de secondes précises.\n" +
+      "- Métriques: reflète ce que tu vois RÉELLEMENT bouger. Si une qualité n'est pas observable, donne 50-65, pas 90+.\n" +
+      "- Inefficiences: 1-2 points concrets réellement observés.\n" +
+      "- Plan d'entraînement: adapté au niveau ET aux défauts vus, au moins 1 exercice ludique, progression réaliste sur 4 semaines.\n\n" +
+      "RÉPONDS UNIQUEMENT en JSON valide, sans texte avant/après, sans markdown. Structure exacte :\n" +
+      '{"videoObserved":true,"score":<0-100>,"grade":"<A/B/C>","whatISee":"<observation globale fluide>","metrics":{"trajectory":<n>,"explosivity":<n>,"fluidity":<n>,"timing":<n>,"balance":<n>,"efficiency":<n>},"pmaxUsed":<n ou null>,"duration":<n ou null>,"inefficiencies":[{"move":"<moment>","severity":"<high|medium|low>","description":"<1 phrase>","biomechanics":"<1 phrase>","fix":"<1 phrase>"}],"strengths":["<point fort réel>"],"observation":"<2 phrases sur la session>","recommendation":"<1 priorité>","optimalPath":"<1 phrase>","scoreGain":<n>,"historyInsight":"<comparaison ou Première session.>","trainingPlan":{"weeklyGoal":"<objectif>","estimatedProgressionWeeks":<n>,"projectedScore4weeks":<n>,"exercises":[{"name":"<ex>","target":"<cible>","protocol":"<comment>","frequency":"<freq>","rationale":"<pourquoi>","progression":"<progression>"},{"name":"<ex2>","target":"<cible2>","protocol":"<comment>","frequency":"<freq>","rationale":"<pourquoi>","progression":"<progression>"}],"weeklySchedule":[{"day":"<jour>","focus":"<focus>","duration":"<durée>","intensity":"<intensité>"}]}}'
+    );
   }
 
-  const content = candidate.content.parts.map(part => ({
-    type: 'text',
-    text: part.text || '',
-  }));
+  // ── Étape 1 : Upload de la vidéo via la Files API (resumable) ─────────
+  async function uploadVideo(file, onProgress) {
+    onProgress && onProgress(10, "Initialisation de l'upload...");
 
-  return {
-    content,
-    model: GEMINI_MODEL,
-    role: 'assistant',
-    stop_reason: 'end_turn',
-  };
-}
-
-exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'POST, DELETE, OPTIONS',
-      },
-      body: '',
-    };
-  }
-
-  // ── DELETE: Suppression d'une analyse dans Supabase ───────────────
-  if (event.httpMethod === 'DELETE') {
-    try {
-      const { analysisId, profileId } = JSON.parse(event.body || '{}');
-      const supaUrl = process.env.SUPABASE_URL;
-      const supaKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
-      if (!supaUrl || !supaKey) {
-        return { statusCode: 500, body: JSON.stringify({ error: 'Supabase non configure' }) };
-      }
-      const url = supaUrl + '/rest/v1/analyses?profile_id=eq.' + encodeURIComponent(profileId) + (analysisId ? '&id=eq.' + encodeURIComponent(analysisId) : '');
-      const res = await new Promise((resolve, reject) => {
-        const u = new URL(url);
-        const req = https.request({
-          hostname: u.hostname, path: u.pathname + u.search, method: 'DELETE',
-          headers: { 'apikey': supaKey, 'Authorization': 'Bearer ' + supaKey, 'Prefer': 'return=minimal' }
-        }, r => { let d=''; r.on('data', c=>d+=c); r.on('end', ()=>resolve({status:r.statusCode,body:d})); });
-        req.on('error', reject); req.end();
-      });
-      return { statusCode: 200, headers: { 'Content-Type':'application/json', 'Access-Control-Allow-Origin':'*' }, body: JSON.stringify({ ok: res.status < 400, status: res.status }) };
-    } catch (e) {
-      return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
-    }
-  }
-
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: { message: 'GEMINI_API_KEY non configuree sur Netlify' } }),
-    };
-  }
-
-  try {
-    const payload = JSON.parse(event.body);
-    const mode = payload.mode || 'coaching';
-    let systemPrompt;
-
-    if (mode === 'route_reading') {
-      systemPrompt = `Tu es un coach d escalade expert en lecture de voie.
-
-Tu recois une photo d un mur de bloc. Tu dois identifier les prises visibles et leurs positions PRECISES.
-
-IMPORTANT — coordonnees:
-- x=0 bord gauche, x=100 bord droit
-- y=0 haut de l image, y=100 bas
-
-OBJECTIFS:
-- LOLOTTE: prises forcant placement de hanche, genou interieur
-- TECHNIQUE: prises demandant precision et equilibre
-- FORCE: prises petites ou loin, explosion ou maintien
-- DALLE: prises hautes, friction, transfert poids sur pieds
-- DEVERS: prises sous plafond, gainage et pieds actifs
-- COORDINATION: enchainement de mouvements dynamiques
-
-ESTIMATION DU NIVEAU DU BLOC:
-Tu DOIS aussi estimer le niveau de difficulte du bloc (echelle francaise: 4A, 4B, 4C, 5A, 5B, 5C, 6A, 6A+, 6B, 6B+, 6C, 6C+, 7A, 7A+, 7B, 7B+, 7C, 7C+, 8A, 8A+).
-Critere: taille des prises (gros bacs=facile, petites reglettes/bossettes=dur), inclinaison du mur, espacement des prises, complexite de l enchainement.
-
-Tu DOIS repondre UNIQUEMENT avec du JSON valide, sans texte avant ou apres, sans markdown.
-Format exact:
-{"objective":"<objectif>","wallType":"<type de mur>","estimatedLevel":"<niveau ex: 6B>","levelReason":"<courte explication du niveau>","holds":[{"id":1,"x":<0-100>,"y":<0-100>,"type":"<bac|reglette|bossette|volume|plot>","color":"<couleur>","priority":"<high|medium|low>","relevance":"<pertinence>","usage":"<utilisation>"}],"suggestedSequence":"<enchainement etape par etape>","keyMove":"<mouvement cle>","tip":"<conseil>","progression":"<comment progresser>"}`;
-    } else {
-      systemPrompt = `Tu es un coach d escalade de haut niveau, pedagogue et bienveillant.
-
-${PRO_REFERENCES}
-
-${TRAINING_PHILOSOPHY}
-
-REGLES STRICTES SUR LES SCORES ET POURCENTAGES:
-- Les scores DOIVENT etre coherents avec le niveau declare du grimpeur (cf SCORES TYPIQUES PAR NIVEAU)
-- Compare aux references pros: un grimpeur 6A NE PEUT PAS avoir un score >82 (reserve aux 8A+)
-- Les metriques (trajectory, explosivity, fluidity, timing, balance, efficiency) doivent refleter ce que tu VOIS reellement
-- Si tu ne vois pas clairement une qualite (ex: timing si pas de mouvement explosif visible), donne un score moyen 50-65 pas 90+
-- Ne jamais donner de scores >90 sauf si la technique observee est clairement de niveau elite mondial
-
-POUR LES INEFFICIENCES:
-- Identifier 1-2 points concrets reellement observables sur les images
-- Comparer aux references pros UNIQUEMENT quand pertinent et constate
-
-POUR LES STRENGTHS:
-- Citer ce qui est reellement bien fait, base sur les images
-- Pas de strength generique non observee
-
-POUR LE PLAN D ENTRAINEMENT:
-- Adapte au niveau declare ET aux defauts vus
-- Au moins 1 exercice ludique
-- Progression realiste sur 4 semaines
-
-REGLES DE REDACTION IMPORTANTES:
-- Dans "whatISee": decris la session de maniere globale et fluide, JAMAIS de reference aux numeros d images ("image 1", "images 3-4", "frame 2" etc.). Parle directement du grimpeur: "Le grimpeur montre...", "On observe une bonne...", "La technique revele...", "En debut de sequence...", "Sur le devers..."
-- Dans "inefficiencies[].description" et "inefficiencies[].fix": meme regle, zero reference aux numeros d images
-- Dans "observation": parle de la session dans son ensemble, pas de frames specifiques
-- Dans "strengths": meme chose, observations globales
-
-REPONDS UNIQUEMENT en JSON valide, sans texte avant ou apres.`;
-    }
-
-    // ── Convert messages from Claude format to Gemini format ──────────
-    const geminiContents = claudeToGemini(payload.messages);
-
-    // ── Build Gemini API request ─────────────────────────────────────
-    const geminiBody = {
-      contents: geminiContents,
-      systemInstruction: {
-        parts: [{ text: systemPrompt }],
-      },
-      generationConfig: {
-        maxOutputTokens: payload.max_tokens || 4000,
-        temperature: 0.4,
-      },
-    };
-
-    const bodyStr = JSON.stringify(geminiBody);
-    const geminiUrl = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-
-    const result = await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'generativelanguage.googleapis.com',
-        path: geminiUrl,
-        method: 'POST',
+    // Démarre une session d'upload resumable
+    var startRes = await fetch(
+      GEMINI_BASE + "/upload/v1beta/files?key=" + GEMINI_KEY,
+      {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(bodyStr),
+          "X-Goog-Upload-Protocol": "resumable",
+          "X-Goog-Upload-Command": "start",
+          "X-Goog-Upload-Header-Content-Length": String(file.size),
+          "X-Goog-Upload-Header-Content-Type": file.type || "video/mp4",
+          "Content-Type": "application/json",
         },
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));
-      });
-      req.on('error', reject);
-      req.write(bodyStr);
-      req.end();
+        body: JSON.stringify({ file: { display_name: file.name || "climb.mp4" } }),
+      }
+    );
+
+    if (!startRes.ok) {
+      var errTxt = await startRes.text();
+      throw new Error("Upload init échoué (" + startRes.status + "): " + errTxt.slice(0, 200));
+    }
+
+    var uploadUrl = startRes.headers.get("X-Goog-Upload-URL");
+    if (!uploadUrl) throw new Error("Pas d'URL d'upload renvoyée par Gemini");
+
+    onProgress && onProgress(30, "Envoi de la vidéo...");
+
+    // Envoie les octets et finalise
+    var uploadRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        "Content-Length": String(file.size),
+        "X-Goog-Upload-Offset": "0",
+        "X-Goog-Upload-Command": "upload, finalize",
+      },
+      body: file,
     });
 
-    // ── Handle errors ────────────────────────────────────────────────
-    if (result.statusCode !== 200) {
-      let errMsg = 'Erreur API Gemini (HTTP ' + result.statusCode + ')';
-      try {
-        const parsed = JSON.parse(result.body);
-        if (parsed.error && parsed.error.message) errMsg = parsed.error.message;
-        if (parsed.error && parsed.error.status === 'RESOURCE_EXHAUSTED') errMsg = 'exceeded_limit';
-      } catch (_) {
-        errMsg = 'Erreur serveur (réponse non-JSON). Vérifiez votre clé API Gemini.';
-      }
-      return {
-        statusCode: result.statusCode >= 400 ? result.statusCode : 502,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ error: { message: errMsg, type: 'api_error' } }),
-      };
+    if (!uploadRes.ok) {
+      var e2 = await uploadRes.text();
+      throw new Error("Upload échoué (" + uploadRes.status + "): " + e2.slice(0, 200));
     }
 
-    // ── Parse Gemini response and convert to Claude format ───────────
-    let geminiData;
-    try {
-      geminiData = JSON.parse(result.body);
-    } catch (_) {
-      return {
-        statusCode: 502,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ error: { message: 'Réponse API invalide (non-JSON)', type: 'parse_error' } }),
-      };
-    }
-
-    const claudeResponse = geminiToClaude(geminiData);
-
-    return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'X-Smart-Climb-Model': GEMINI_MODEL,
-      },
-      body: JSON.stringify(claudeResponse),
-    };
-  } catch (e) {
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: { message: e.message } }),
-    };
+    var fileInfo = await uploadRes.json();
+    return fileInfo.file; // { uri, name, state, mimeType, ... }
   }
-};
+
+  // ── Étape 2 : Attendre que la vidéo soit "ACTIVE" (Gemini la traite) ──
+  async function waitActive(fileName, onProgress) {
+    for (var i = 0; i < 30; i++) {
+      var res = await fetch(
+        GEMINI_BASE + "/v1beta/" + fileName + "?key=" + GEMINI_KEY
+      );
+      var info = await res.json();
+      if (info.state === "ACTIVE") return info;
+      if (info.state === "FAILED") throw new Error("Gemini n'a pas pu traiter la vidéo");
+      onProgress && onProgress(50 + i, "Traitement de la vidéo par l'IA...");
+      await new Promise(function (r) { setTimeout(r, 2000); });
+    }
+    throw new Error("Délai de traitement vidéo dépassé");
+  }
+
+  // ── Étape 3 : Analyse — on passe le file_uri + le prompt ─────────────
+  async function analyze(fileUri, mimeType, prompt, onProgress) {
+    onProgress && onProgress(82, "Analyse biomécanique...");
+
+    var body = {
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { fileData: { mimeType: mimeType || "video/mp4", fileUri: fileUri } },
+            { text: prompt },
+          ],
+        },
+      ],
+      generationConfig: { maxOutputTokens: 4000, temperature: 0.4 },
+    };
+
+    var res = await fetch(
+      GEMINI_BASE + "/v1beta/models/" + GEMINI_MODEL + ":generateContent?key=" + GEMINI_KEY,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+
+    var data = await res.json();
+
+    if (data.error) {
+      if (data.error.status === "RESOURCE_EXHAUSTED") throw new Error("exceeded_limit");
+      throw new Error(data.error.message || "Erreur API Gemini");
+    }
+
+    var txt = "";
+    try {
+      txt = data.candidates[0].content.parts.map(function (p) { return p.text || ""; }).join("");
+    } catch (e) {
+      throw new Error("Réponse Gemini vide");
+    }
+
+    // Nettoyage : enlève les fences markdown éventuels, extrait le JSON
+    txt = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
+    var match = txt.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("Réponse invalide (pas de JSON)");
+
+    return JSON.parse(match[0]);
+  }
+
+  // ── Pipeline complet exposé en global ────────────────────────────────
+  window.smartClimbAnalyzeVideo = async function (profile, file, history, onProgress) {
+    if (!GEMINI_KEY) throw new Error("Clé Gemini non configurée (window.SMARTCLIMB_GEMINI_KEY)");
+    if (!file) throw new Error("Aucune vidéo fournie");
+
+    var historyStr = (history || [])
+      .filter(function (h) { return h.videoObserved; })
+      .slice(-3)
+      .map(function (h) {
+        var pr = h.params || {};
+        return (pr.style || "") + " " + (pr.level || "") + " — score " + h.score;
+      })
+      .join(" | ");
+
+    var prompt = buildPrompt(profile, historyStr);
+
+    onProgress && onProgress(5, "Préparation...");
+    var uploaded = await uploadVideo(file, onProgress);
+    var active = await waitActive(uploaded.name, onProgress);
+    var result = await analyze(active.uri, active.mimeType, prompt, onProgress);
+
+    onProgress && onProgress(100, "Terminé ✓");
+    result.videoObserved = true;
+    return result;
+  };
+})();
