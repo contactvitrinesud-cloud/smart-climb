@@ -129,7 +129,7 @@
           ],
         },
       ],
-      generationConfig: { maxOutputTokens: 4000, temperature: 0.4 },
+      generationConfig: { maxOutputTokens: 8000, temperature: 0.4, responseMimeType: "application/json" },
     };
 
     var res = await fetch(
@@ -155,12 +155,26 @@
       throw new Error("Réponse Gemini vide");
     }
 
-    // Nettoyage : enlève les fences markdown éventuels, extrait le JSON
+    // Avec responseMimeType JSON, la réponse est déjà du JSON pur.
+    // On nettoie quand même les fences au cas où, et on tente une récupération.
     txt = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
-    var match = txt.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("Réponse invalide (pas de JSON)");
 
-    return JSON.parse(match[0]);
+    // Tentative directe (cas normal avec responseMimeType)
+    try {
+      return JSON.parse(txt);
+    } catch (e1) {
+      // Fallback : extraire le bloc JSON
+      var match = txt.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          return JSON.parse(match[0]);
+        } catch (e2) {
+          // JSON tronqué : la réponse a été coupée. On informe clairement.
+          throw new Error("Analyse incomplète (réponse trop longue). Réessayez avec une vidéo plus courte.");
+        }
+      }
+      throw new Error("Réponse invalide (pas de JSON)");
+    }
   }
 
   // ── Pipeline complet exposé en global ────────────────────────────────
