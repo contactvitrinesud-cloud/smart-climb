@@ -128,8 +128,6 @@
 
   // ── Étape 3 : Analyse — on passe le file_uri + le prompt ─────────────
   async function analyze(fileUri, mimeType, prompt, onProgress) {
-    onProgress && onProgress(82, "Analyse biomécanique...");
-
     var body = {
       contents: [
         {
@@ -143,16 +141,46 @@
       generationConfig: { maxOutputTokens: 8000, temperature: 0.4, responseMimeType: "application/json" },
     };
 
-    var res = await fetch(
-      GEMINI_BASE + "/v1beta/models/" + GEMINI_MODEL + ":generateContent?key=" + GEMINI_KEY,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }
-    );
+    // Retry automatique : jusqu'à 4 tentatives en cas de surcharge (503 / overloaded)
+    var maxAttempts = 4;
+    var data = null;
+    var res = null;
 
-    var data = await res.json();
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt === 1) {
+        onProgress && onProgress(82, "Analyse biomécanique...");
+      } else {
+        onProgress && onProgress(82, "Serveur occupé, nouvelle tentative (" + attempt + "/" + maxAttempts + ")...");
+      }
+
+      res = await fetch(
+        GEMINI_BASE + "/v1beta/models/" + GEMINI_MODEL + ":generateContent?key=" + GEMINI_KEY,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+
+      data = await res.json();
+
+      // Détecte une surcharge temporaire (503 / UNAVAILABLE / "overloaded" / "high demand")
+      var isOverload =
+        res.status === 503 ||
+        (data.error && (
+          data.error.status === "UNAVAILABLE" ||
+          /overload|high demand|try again|unavailable/i.test(data.error.message || "")
+        ));
+
+      if (isOverload && attempt < maxAttempts) {
+        // Attente progressive : 3s, 6s, 9s
+        var waitMs = 3000 * attempt;
+        await new Promise(function (r) { setTimeout(r, waitMs); });
+        continue; // nouvelle tentative
+      }
+
+      break; // succès ou erreur non-retryable
+    }
 
     if (data.error) {
       if (data.error.status === "RESOURCE_EXHAUSTED") throw new Error("exceeded_limit");
