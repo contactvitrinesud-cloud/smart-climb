@@ -1,4 +1,16 @@
-<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/><meta name="theme-color" content="#080C10"/><meta name="application-name" content="Smart Climb"/><meta name="apple-mobile-web-app-title" content="Smart Climb"/><meta name="apple-mobile-web-app-capable" content="yes"/><title>Smart Climb — Performance Analysis AI</title><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet"/><style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root{height:100%;width:100%;overflow:hidden}body{background:#080C10;color:#F0F4F8;font-family:'Barlow',sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}:root{--c1:#0BFFB8;--c2:#FF3D5C;--c3:#FFB800;--c4:#7C3AFF;--dark:#080C10;--dark2:#0E1418;--dark3:#141C22;--dark4:#1C2730;--text:#F0F4F8;--muted:#8A9BAB;--border:rgba(255,255,255,0.08);--font-head:'Barlow Condensed',sans-serif;--font-body:'Barlow',sans-serif}input,select,textarea,button{font-family:inherit}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#1C2730;border-radius:2px}</style><script>window.SMARTCLIMB_GEMINI_KEY="__GEMINI_KEY_HERE__";</script>
+<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/><meta name="theme-color" content="#080C10"/><meta name="application-name" content="Smart Climb"/><meta name="apple-mobile-web-app-title" content="Smart Climb"/><meta name="apple-mobile-web-app-capable" content="yes"/><title>Smart Climb — Performance Analysis AI</title><link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet"/><style>*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}html,body,#root{height:100%;width:100%;overflow:hidden}body{background:#080C10;color:#F0F4F8;font-family:'Barlow',sans-serif;-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}:root{--c1:#0BFFB8;--c2:#FF3D5C;--c3:#FFB800;--c4:#7C3AFF;--dark:#080C10;--dark2:#0E1418;--dark3:#141C22;--dark4:#1C2730;--text:#F0F4F8;--muted:#8A9BAB;--border:rgba(255,255,255,0.08);--font-head:'Barlow Condensed',sans-serif;--font-body:'Barlow',sans-serif}input,select,textarea,button{font-family:inherit}input[type=number]::-webkit-inner-spin-button,input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:#1C2730;border-radius:2px}</style><script>
+// Charge la clé depuis le serveur au démarrage (jamais exposée dans le code)
+(async function() {
+  try {
+    const r = await fetch('/.netlify/functions/config');
+    const d = await r.json();
+    window.SMARTCLIMB_GEMINI_KEY = d.k || '';
+  } catch(e) {
+    console.error('Config load failed', e);
+    window.SMARTCLIMB_GEMINI_KEY = '';
+  }
+})();
+</script>
 <script>
 // ═══════════════════════════════════════════════════════════════════
 // SMART CLIMB — Module d'analyse VIDÉO via Gemini Files API
@@ -152,8 +164,19 @@
   }
 
   // ── Pipeline complet exposé en global ────────────────────────────────
+  // Attend que la clé soit chargée (max 5s)
+  async function waitForKey() {
+    for (var i = 0; i < 50; i++) {
+      var k = window.SMARTCLIMB_GEMINI_KEY;
+      if (k && k.length > 10) return k;
+      await new Promise(function(r){ setTimeout(r, 100); });
+    }
+    throw new Error("Clé Gemini non disponible");
+  }
+
   window.smartClimbAnalyzeVideo = async function (profile, file, history, onProgress) {
-    if (!GEMINI_KEY) throw new Error("Clé Gemini non configurée (window.SMARTCLIMB_GEMINI_KEY)");
+    GEMINI_KEY = await waitForKey();
+    if (!GEMINI_KEY) throw new Error("Clé Gemini non configurée");
     if (!file) throw new Error("Aucune vidéo fournie");
 
     var historyStr = (history || [])
